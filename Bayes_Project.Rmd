@@ -1,0 +1,140 @@
+---
+title: "BDA Final Project"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(rstanarm)
+library(brms)
+library(bayesplot)
+library(bayestestR)
+library(tidybayes)
+library(parameters)
+library(patchwork)
+library(magrittr)
+library(lubridate)
+library(broom)
+library(broom.mixed)
+library(ggbeeswarm)
+library(loo)
+library(emmeans)
+
+options(mc.cores = parallel::detectCores())
+set.seed(1766)
+```
+### This data set has entries with a person's years of experience, age, and salary. This is not my own data set; I obtained it from kaggle: https://www.kaggle.com/codebreaker619/salary-data-with-age-and-experience
+
+### This data set is used for machine learning, which I think is important in the data science field. However, I do wonder where the numbers come from, and how the source may have affected my results. 
+
+### Let's start with making a model. I will also look at the outcome per every variable.
+```{r}
+salary_data <- read_csv("Salary_Data.csv")
+salary_data %>% glimpse()
+salary_data %>%
+  ggplot(aes(YearsExperience, Salary)) + 
+  geom_smooth()
+salary_data %>%
+  ggplot(aes(Age, Salary)) +
+  geom_smooth()
+salary_stan <- stan_glm(Salary ~ YearsExperience + Age, data = salary_data)
+```
+### By the plots for every data point separated by the two predictors, we can see that Age and Salary and YearsExperience and Salary have a positive linear relationship. 
+
+### Now, we can check to see the MCMC process worked well. Let's start with the trace plots.
+```{r}
+plot(salary_stan, plotfun = "trace", pars = "YearsExperience")
+plot(salary_stan, plotfun = "trace", pars = "Age")
+plot(salary_stan, plotfun = "trace", pars = "(Intercept)")
+plot(salary_stan, plotfun = "trace", pars = "sigma") 
+```
+### The trace plots look pretty good. They are not stuck in one place, and go in one direction. 
+
+### Now, let's look at the summary for salary_stan, from which we can see our rhat values.
+
+```{r}
+summary(salary_stan, digits=4)
+```
+### All of the rhat values are larger than one yet smaller than 1.01 and 1.05. This suggests that there is convergence, and we can keep going with our analysis. 
+
+### Here is a summary of the posteriors, with 90% equal tails credible intervals. I also included a graph of the densities of he regression coefficients for YearsExperience and Age.
+```{r}
+mcmc_areas(salary_stan, pars = "YearsExperience", prob = 0.9)
+mcmc_areas(salary_stan, pars = "Age", prob = 0.9)
+mcmc_areas(salary_stan, pars = "(Intercept)", prob = 0.9)
+mcmc_areas(salary_stan, pars = "sigma", prob = 0.9)
+
+plot(salary_stan, plotfun = "dens", pars = c("YearsExperience", "Age"))
+
+describe_posterior(salary_stan, par = "YearsExperience", ci = .95, centrality = "mean")
+describe_posterior(salary_stan, par = "Age", ci = .95, centrality = "mean")
+```
+
+### Posterior Predictive Check
+```{r}
+pp_check(salary_stan) 
+```
+### The Posterior Predictive Check looks okay. The light blue lines seem to follow the shape of the dark blue line. However, I do find the distribution having two humps a bit strange. I wonder if that is due to the relatively small data set.  
+
+### Here, I will do some predictions. One prediction will be within the values of the dataset, another will try to go over the reported values, and another will go below the reported values. Then, I will do a comparison with salary_prediction4 and salary_prediction5: which age will get a higher salary?
+```{r}
+salary_prediction1 <- # within data set
+  tibble(YearsExperience = 3.5, Age = 23.5)
+salary_stan %>%
+  posterior_predict(newdata = salary_prediction1) %>%
+  colMeans()
+
+salary_prediction2 <- # over reported values of data set
+  tibble(YearsExperience = 11, Age = 40)
+salary_stan %>%
+  posterior_predict(newdata = salary_prediction2) %>%
+  colMeans()
+
+salary_prediction3 <- # below reported values of data set
+  tibble(YearsExperience = 0.5, Age = 20)
+salary_stan %>%
+  posterior_predict(newdata = salary_prediction3) %>%
+  colMeans()
+
+salary_prediction4 <- # more experience compared to age
+  tibble(YearsExperience = 2, Age = 21)
+salary_stan %>%
+  posterior_predict(newdata = salary_prediction4) %>%
+  colMeans()
+
+salary_prediction5 <- # less experience compared to age
+  tibble(YearsExperience = 2, Age = 40)
+salary_stan %>%
+  posterior_predict(newdata = salary_prediction5) %>% 
+  colMeans()
+```
+### From these results, we can see that the more experience someone has, their salary will increase. Also, the older someone is, then the higher their salary is. When comparing people with the same amount of experience but different ages, the older person will get a higher salary. With that logic, of two people who are the same age, the one with more experience will get a higher salary. 
+
+### Here, I will find the 90% predictive intervals for the new observations. 
+```{r}
+salary_stan %>%
+  predictive_interval(newdata = salary_prediction1)
+salary_stan %>%
+  predictive_interval(newdata = salary_prediction2)
+salary_stan %>%
+  predictive_interval(newdata = salary_prediction3)
+salary_stan %>%
+  predictive_interval(newdata = salary_prediction4)
+salary_stan %>%
+  predictive_interval(newdata = salary_prediction5)
+```
+
+### I will also create a loo comparison of three models. I will create two new models with one predictor each, and then compare them.
+
+```{r}
+salary_stan2 <- stan_glm(Salary ~ YearsExperience, data = salary_data)
+salary_stan3 <- stan_glm(Salary ~ Age, data = salary_data)
+salary_stan_loo <- loo(salary_stan, k_threshold = 0.7)
+salary_stan2_loo <- loo(salary_stan2, k_threshold = 0.7)
+salary_stan3_loo <- loo(salary_stan3, k_threshold = 0.7)
+loo_compare(salary_stan_loo, salary_stan2_loo, salary_stan3_loo)
+```
+### This comparison shows that the model using only YearsExperience as a predictor is a better model. However, the standard error and elpd are low for both salary_stan and salary_stan3, so it can be interpreted that all three models work well for the data.
+
+### From my analysis, I conclude that Age and YearsExperience have a big impact on Salary. The more experience someone has and/or the older they are, the higher their salary is. From the predictions I made, it seems that age has a bigger influence on salary due to the comparisons I made with salary_prediction4 and salary_prediction5. However, with the loo comparison, salary_stan2loo, which is based on only having YearsExperience as a predictor, was found to be the best model. I think that both can be true. YearsExperience and Age are both strong predictors for Salary. I think it may be difficult to see which may be better because of the connection the two predictors have. The older someone is, the more likely they are to have more experience. 
